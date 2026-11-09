@@ -267,7 +267,15 @@ def build(struct_name, mat_name, shift=False, slider=None, shape="cell"):
         cn.append(dict(cn=len(dists), dmin=min(dists) if dists else 0.0,
                        dmean=float(np.mean(dists)) if dists else 0.0, partners=partners))
 
-    return dict(struct=struct_name, material=mat_name, M=M, cell=m["cell"], species=species, shape=shape,
+    # host = the species whose lattice defines the "holes": the anion array unless the material says otherwise
+    host = None
+    if m.get("host"):
+        host = next((i for i, s in enumerate(species) if s["label"] == m["host"]), None)
+    if host is None:
+        an_idx = [i for i, s in enumerate(species) if s["role"] == "anion"]
+        host = max(an_idx, key=lambda i: species[i]["mult"]) if an_idx else None
+
+    return dict(struct=struct_name, material=mat_name, M=M, cell=m["cell"], species=species, shape=shape, host=host,
                 zfac=3 if shape == "hex" else 1,
                 vacant=vacant, cut=cut, dmin=dmin, cn=cn, nops=len(ops),
                 sg=m.get("sg", S["sg"]), pearson=m.get("pearson", S["pearson"]),
@@ -537,20 +545,33 @@ def site_description(B, i, p):
 
 
 def vacant_description(B, p, max_lines=3):
-    """HTML lines for an empty interstitial site: what surrounds it, species by species."""
+    """HTML lines for an empty interstitial site. The hole type is always stated for the HOST lattice
+    (the close-packed array, normally the anions), so an octahedral hole is never reported as tetrahedral
+    just because it looks different from another sublattice."""
     M, sp_ = B["M"], B["species"]
     pc = np.asarray(p) @ M
-    found = []
-    for sj in sp_:
-        P = images_around(sj["orbit"], p) @ M
+
+    def view(j):
+        P = images_around(sp_[j]["orbit"], p) @ M
         dd = np.linalg.norm(P - pc, axis=1)
         d0 = dd.min()
         sel = dd < d0 * 1.08
-        found.append((d0, sj["label"], int(sel.sum()), classify_shell(P[sel] - pc, dd[sel])))
+        return d0, int(sel.sum()), classify_shell(P[sel] - pc, dd[sel])
+
+    h = B.get("host")
+    lines = ["<b>Empty interstitial site</b>"]
+    if h is not None:
+        d0, n, cls = view(h)
+        lines.append(f"<b>{cls.split(' (')[0].capitalize()} hole</b> in the {sp_[h]['label']} array:")
+        lines.append(f"{n} × {sp_[h]['label']} at {d0:.3f} Å")
+        return lines
+    found = []
+    for j, sj in enumerate(sp_):
+        d0, n, cls = view(j)
+        found.append((d0, sj["label"], n, cls))
     nearest = min(f[0] for f in found)
     found = [f for f in sorted(found) if f[0] < 1.4 * nearest and f[2] >= 3][:max_lines]
-    lines = ["<b>Empty interstitial site</b> – surrounded by:"]
-    lines += [f"{n} × {lab} at {d:.3f} Å → {cls} hole for this sublattice" for d, lab, n, cls in found]
+    lines += [f"{n} × {lab} at {d:.3f} Å → {cls}" for d, lab, n, cls in found]
     return lines
 
 
@@ -614,28 +635,28 @@ STRUCTURES = {
         vacant=[vac("Tetrahedral hole (empty)", (.25, .25, .25), "8c", "square-open")],
         materials={
             "NaCl": dict(cell=(5.640,) * 3 + (90,) * 3, ionic=True, species=[
-                sp("Na⁺", "Na", "cation", 1.02, "#ab5cf2", 22.990, (0, 0, 0), "4a", geom="octahedral"),
-                sp("Cl⁻", "Cl", "anion", 1.81, "#2ecc40", 35.45, (.5, .5, .5), "4b", geom="octahedral")]),
+                sp("Na⁺", "Na", "cation", 1.02, "#ab5cf2", 22.990, (.5, .5, .5), "4b", geom="octahedral"),
+                sp("Cl⁻", "Cl", "anion", 1.81, "#2ecc40", 35.45, (0, 0, 0), "4a", geom="octahedral")]),
             "MgO": dict(cell=(4.212,) * 3 + (90,) * 3, ionic=True, species=[
-                sp("Mg²⁺", "Mg", "cation", 0.72, "#7fdc3c", 24.305, (0, 0, 0), "4a", geom="octahedral"),
-                sp("O²⁻", "O", "anion", 1.40, "#e63946", 15.999, (.5, .5, .5), "4b", geom="octahedral")]),
+                sp("Mg²⁺", "Mg", "cation", 0.72, "#7fdc3c", 24.305, (.5, .5, .5), "4b", geom="octahedral"),
+                sp("O²⁻", "O", "anion", 1.40, "#e63946", 15.999, (0, 0, 0), "4a", geom="octahedral")]),
         },
-        about=("**Rock salt (B1).** Two interpenetrating FCC lattices displaced by ½ along a cube edge. "
-               "Equivalently, one ion forms a cubic-close-packed array and the other fills **all octahedral "
-               "holes**. Coordination is **6 : 6**. The 8 tetrahedral holes per cell are empty (toggle "
-               "*vacant interstitial sites*). The body-centre ion has a complete octahedron inside the cell – "
-               "use *coordination polyhedron*.")),
+        about=("**Rock salt (B1).** The large **anions (Cl⁻, O²⁻) form a cubic-close-packed (FCC) array** – they sit at "
+               "the corners and face centres – and the smaller **cations fill all octahedral holes** (the body centre and "
+               "the edge midpoints). The cations themselves also form an FCC lattice, displaced by ½ along a cube edge. "
+               "Coordination is **6 : 6**. The 8 tetrahedral holes per cell are empty (toggle *vacant interstitial "
+               "sites*). The body-centre cation has a complete octahedron inside the cell – use *coordination polyhedron*.")),
 
     "Cesium Chloride (CsCl)": dict(
         category=C1, sg="Pm-3m (No. 221)", pearson="cP2", gens=PM3M, vacant=[],
         materials={
             "CsCl": dict(cell=(4.123,) * 3 + (90,) * 3, ionic=True, species=[
-                sp("Cs⁺", "Cs", "cation", 1.74, "#8e44ad", 132.905, (0, 0, 0), "1a", geom="cubic (8)"),
-                sp("Cl⁻", "Cl", "anion", 1.81, "#2ecc40", 35.45, (.5, .5, .5), "1b", geom="cubic (8)")]),
+                sp("Cs⁺", "Cs", "cation", 1.74, "#8e44ad", 132.905, (.5, .5, .5), "1b", geom="cubic (8)"),
+                sp("Cl⁻", "Cl", "anion", 1.81, "#2ecc40", 35.45, (0, 0, 0), "1a", geom="cubic (8)")]),
         },
         about=("**Cesium chloride (B2).** A *simple cubic* lattice with a two-ion basis – it is **not** BCC, "
-               "because the two sites hold different ions. One ion sits at the corners and the other at the "
-               "body centre, giving coordination **8 : 8**. Only one formula unit per cell. The radius ratio "
+               "because the two sites hold different ions. The anion (Cl⁻) sits at the corners and the cation "
+               "(Cs⁺) at the body centre, in the cubic hole of the anion lattice, giving coordination **8 : 8**. Only one formula unit per cell. The radius ratio "
                "is close to 1, which is why large cations adopt it. Use *shift origin* to swap which ion is "
                "at the corners.")),
 
@@ -645,11 +666,11 @@ STRUCTURES = {
                 vac("Octahedral hole (empty)", (.5, .5, .5), "4b", "diamond-open")],
         materials={
             "ZnS (sphalerite)": dict(cell=(5.409,) * 3 + (90,) * 3, ionic=True, species=[
-                sp("Zn²⁺", "Zn", "cation", 0.60, "#7d80b0", 65.38, (0, 0, 0), "4a", geom="tetrahedral"),
-                sp("S²⁻", "S", "anion", 1.84, "#f1c40f", 32.06, (.25, .25, .25), "4c", geom="tetrahedral")]),
+                sp("Zn²⁺", "Zn", "cation", 0.60, "#7d80b0", 65.38, (.25, .25, .25), "4c", geom="tetrahedral"),
+                sp("S²⁻", "S", "anion", 1.84, "#f1c40f", 32.06, (0, 0, 0), "4a", geom="tetrahedral")]),
             "β-SiC": dict(cell=(4.360,) * 3 + (90,) * 3, ionic=False, species=[
-                sp("Si", "Si", "cation", 1.11, "#d9b38c", 28.085, (0, 0, 0), "4a", geom="tetrahedral"),
-                sp("C", "C", "anion", 0.77, "#4d4d4d", 12.011, (.25, .25, .25), "4c", geom="tetrahedral")]),
+                sp("Si", "Si", "cation", 1.11, "#d9b38c", 28.085, (.25, .25, .25), "4c", geom="tetrahedral"),
+                sp("C", "C", "anion", 0.77, "#4d4d4d", 12.011, (0, 0, 0), "4a", geom="tetrahedral")]),
         },
         about=("**Zinc blende / sphalerite (B3).** One FCC sublattice of the anion, with the cation occupying "
                "**half of the tetrahedral holes**. Coordination is **4 : 4** – a diamond-cubic arrangement "
@@ -661,13 +682,13 @@ STRUCTURES = {
         materials={
             "ZnS (wurtzite)": dict(cell=(3.8227, 3.8227, 6.2607, 90, 90, 120), params=dict(u=0.3748),
                                    ionic=True, species=[
-                sp("Zn²⁺", "Zn", "cation", 0.60, "#7d80b0", 65.38, (1 / 3, 2 / 3, 0), "2b", geom="tetrahedral"),
-                sp("S²⁻", "S", "anion", 1.84, "#f1c40f", 32.06, lambda p: (1 / 3, 2 / 3, p["u"]), "2b",
+                sp("Zn²⁺", "Zn", "cation", 0.60, "#7d80b0", 65.38, lambda p: (1 / 3, 2 / 3, 1 - p["u"]), "2b", geom="tetrahedral"),
+                sp("S²⁻", "S", "anion", 1.84, "#f1c40f", 32.06, (1 / 3, 2 / 3, 0), "2b",
                    geom="tetrahedral")]),
             "α-SiC (2H polytype)": dict(cell=(3.0763, 3.0763, 5.0480, 90, 90, 120), params=dict(u=0.375),
                                         ionic=False, species=[
-                sp("Si", "Si", "cation", 1.11, "#d9b38c", 28.085, (1 / 3, 2 / 3, 0), "2b", geom="tetrahedral"),
-                sp("C", "C", "anion", 0.77, "#4d4d4d", 12.011, lambda p: (1 / 3, 2 / 3, p["u"]), "2b",
+                sp("Si", "Si", "cation", 1.11, "#d9b38c", 28.085, lambda p: (1 / 3, 2 / 3, 1 - p["u"]), "2b", geom="tetrahedral"),
+                sp("C", "C", "anion", 0.77, "#4d4d4d", 12.011, (1 / 3, 2 / 3, 0), "2b",
                    geom="tetrahedral")]),
         },
         about=("**Wurtzite (B4).** The hexagonal sibling of zinc blende: a *hexagonal*-close-packed anion array "
@@ -680,10 +701,10 @@ STRUCTURES = {
         category=C1, sg="Fm-3m (No. 225)", pearson="cF12", gens=FM3M,
         vacant=[vac("Octahedral hole (empty)", (.5, .5, .5), "4b", "diamond-open")],
         materials={
-            "CaF₂": dict(cell=(5.463,) * 3 + (90,) * 3, ionic=True, species=[
+            "CaF₂": dict(cell=(5.463,) * 3 + (90,) * 3, ionic=True, host="Ca²⁺", species=[
                 sp("Ca²⁺", "Ca", "cation", 1.12, "#5bbf5b", 40.078, (0, 0, 0), "4a", geom="cubic (8)"),
                 sp("F⁻", "F", "anion", 1.31, "#90e050", 18.998, (.25, .25, .25), "8c", geom="tetrahedral")]),
-            "c-ZrO₂": dict(cell=(5.09,) * 3 + (90,) * 3, ionic=True, species=[
+            "c-ZrO₂": dict(cell=(5.09,) * 3 + (90,) * 3, ionic=True, host="Zr⁴⁺", species=[
                 sp("Zr⁴⁺", "Zr", "cation", 0.84, "#4fc3c3", 91.224, (0, 0, 0), "4a", geom="cubic (8)"),
                 sp("O²⁻", "O", "anion", 1.38, "#e63946", 15.999, (.25, .25, .25), "8c", geom="tetrahedral")]),
         },
